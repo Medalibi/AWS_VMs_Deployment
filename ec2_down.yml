@@ -1,0 +1,27 @@
+---
+- hosts: local
+  connection: local
+  vars:
+    region: eu-west-2a
+    course_name: ubuntuawstest
+  vars_files:
+    - aws_keys.yml
+  tasks:
+    - name: Gather EC2 facts
+      ec2_instance_facts:
+        region: "{{ region }}"
+        filters:
+          "tag:Type": "{{ course_name }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+      register: ec2
+    - debug: var=ec2
+
+    - name: Terminate EC2 Instance(s)
+      ec2:
+        instance_ids: '{{ item.instance_id }}'
+        state: absent
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+      with_items: "{{ ec2.instances }}"

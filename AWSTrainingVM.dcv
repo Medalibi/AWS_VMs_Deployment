@@ -1,0 +1,12 @@
+[version]
+format=1.0
+
+[options]
+fullscreen=true
+
+[connect]
+host=TrainingConnectionSRV-2ac252b1827f83e7.elb.eu-west-2.amazonaws.com
+port=8443
+user=training
+password=training
+proxytype=system

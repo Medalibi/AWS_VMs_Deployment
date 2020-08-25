@@ -1,0 +1,1003 @@
+---
+- name: Deploy Nice DCV powered Ubuntu 18.04 instances on AWS
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  vars:
+    course_name: Ubuntu18G4VM
+    project_name: OSSF-Training
+    # TrainingBioExcel TrainingSingleCell OSSF-Training TrainingJointWellcome
+    instance_type: g4dn.2xlarge
+    security_group: Training-DCV
+    image: ami-00f6a0c18edb19300
+    trainingpassword: training
+    keypair: Training
+    region: eu-west-2
+    count: 3
+  vars_files:
+    - aws_keys.yml
+
+  tasks:
+#  - name: Create a security group
+#      ec2_group:
+#        name: "{{ security_group }}"
+#        description: The Nice DCV security group
+#        vpc_id: vpc-a458bacd
+#        region: "{{ region }}"
+#        aws_secret_key: "{{ aws_secret_key }}"
+#        rules:
+#          - proto: tcp
+#            from_port: 22
+#            to_port: 22
+#            cidr_ip: 0.0.0.0/0
+#          - proto: tcp
+#            from_port: 8443
+#            to_port: 8443
+#            cidr_ip: 0.0.0.0/0
+#          - proto: tcp
+#            from_port: 2049
+#            to_port: 2049
+#            cidr_ip: sg-0903018d68dbdbbd3
+#          - proto: tcp
+#            from_port: 443
+#            to_port: 443
+#            cidr_ip: 0.0.0.0/0
+#        rules_egress:
+#          - proto: all
+#            cidr_ip: 0.0.0.0/0
+
+    - name: Launch the new EC2 Instance
+      ec2:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        group: "{{ security_group }}"
+        instance_type: "{{ instance_type }}"
+        image: "{{ image }}"
+        wait: true
+        vpc_subnet_id: subnet-818b85f9
+        region: "{{ region }}"
+        keypair: "{{ keypair }}"
+        count: "{{count}}"
+        monitoring: no
+        tenancy: default
+        ### default dedicated host
+        assign_public_ip: yes
+        instance_profile_name: DCVLicenseAccessTrainingTm
+        volumes:
+          - device_name: /dev/sda1
+            volume_type: io1
+            iops: 3000
+            volume_size: 300
+            delete_on_termination: true
+        instance_tags:
+          Course: "{{ course_name }}"
+          team: TrainingTeam
+          Project: "{{ project_name }}"
+          project: "{{ project_name }}"
+      register: ec2
+
+    - name: Add the newly created host so that we can further contact it
+      add_host:
+        name: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}"
+        instance_name: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}"
+        ansible_host: "{{ item.public_ip }}"
+        groups: awstrainingroom
+        remote_user: ubuntu
+        become: True
+        ansible_ssh_private_key_file: /Users/alibi/aws-ansible/Training.pem
+      with_items: "{{ ec2.instances }}"
+
+    - name: Add tag to Instance(s)
+      ec2_tag:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        resource: "{{ item.id }}"
+        region: "{{ region }}"
+        state: "present"
+        tags:
+          Name: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}"
+      with_items: "{{ ec2.instances }}"
+
+    - name: Wait for SSH to come up
+      wait_for:
+        host: "{{ item.public_ip }}"
+        port: 22
+        state: started
+      with_items: "{{ ec2.instances }}"
+
+    - name: Remove old VMs pool file from inventory
+      file:
+        path: "/Users/alibi/aws-ansible/hosts.d/{{ course_name }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove old automated VMs pool file from inventory
+      file:
+        path: /Users/alibi/aws-ansible/hosts.d/awstrainingroom
+        state: absent
+      ignore_errors: yes
+
+
+    - name: Fill in VMs pool inventory file
+      blockinfile:
+        path: "/Users/alibi/aws-ansible/hosts.d/{{ course_name }}"
+        create: yes
+        block: |
+          [{{ course_name }}:vars]
+          ansible_ssh_private_key_file=/Users/alibi/aws-ansible/Training.pem
+          remote_user=ubuntu
+          become=True
+
+          [{{ course_name }}]
+
+    - local_action: lineinfile line="{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}   ansible_host={{ item.public_ip }}" path="/Users/alibi/aws-ansible/hosts.d/{{ course_name }}" insertafter=EOF
+      with_items: "{{ ec2.instances }}"
+
+    - name: Configure DCV file for Thin Clients
+      lineinfile:
+        line: "host={{ item.1.public_ip }}"
+        regexp: '^host='
+        path: "/Users/alibi/aws-ansible/dcv-files/{{ item.0 }}.dcv"
+        state: present
+      with_together:
+         - "{{ groups.ThinClientTR1 }}"
+         - "{{ ec2.instances }}"
+      ignore_errors: yes
+
+##########################################################################
+##########################################################################
+- hosts: Ubuntu18G4VM
+  ###awstrainingroom
+  name: Configure AWS instances OS
+  remote_user: ubuntu
+  become: True
+  gather_facts: False
+  vars:
+    efs_file_system_dns: fs-84620275.efs.eu-west-2.amazonaws.com
+    efs_mount_dir: /media/penelopecloud
+    trainingpassword: training
+  pre_tasks:
+    - name: Change instance hostname
+      lineinfile:
+        path: /etc/hostname
+        regexp: '^ip'
+        line: "{{inventory_hostname}}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Change hosts hostname entry
+      lineinfile:
+        path: /etc/hosts
+        insertafter: '^127\.0\.0\.1'
+        line: "127.0.1.1 {{inventory_hostname}}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Update the software cache
+      apt: update_cache=yes
+
+    - name: Add extra repos
+      shell: add-apt-repository -y ppa:atareao/atareao && apt install -y linux-headers-$(uname -r)
+
+    - name: Install Ubuntu Repo based tools
+      apt:
+        name: "{{ packages }}"
+        update_cache: yes
+      vars:
+        packages:
+        - autoconf
+        - libtool
+        - aptitude
+        - openjdk-8-jre
+        - default-jre
+        - openjdk-8-jre-headless
+        - libcanberra-gtk3-module
+        - libcanberra-gtk-module
+        - libxml2-dev
+        - libxml2
+        - liblzma-dev
+        - curl
+        - libcurl4-openssl-dev
+        - build-essential
+        - make
+        - gcc
+        - automake
+        - libssl-dev
+        - zlib1g-dev
+        - libbz2-dev
+        - python3
+        - python
+        - python3-pip
+        - python-pip
+        - gnome-session
+        - ubuntu-desktop
+        - lightdm
+        - mesa-utils
+        - power-commands
+        - chromium-browser
+        - ubuntu-restricted-extras
+        - unrar
+        - rar
+        - icedax
+        - lame
+        - sharutils
+        - unace
+        - zip
+        - unzip
+        - p7zip-full
+        - p7zip-rar
+        - flashplugin-installer
+        - bleachbit
+        - openssh-server
+        - htop
+        - nload
+        - git
+        - python-dbus
+        - python-gobject
+        - libmpeg3-dev
+        - cmake
+        - libjpeg8
+        - libglib2.0-dev
+        - libglib2.0-0
+        - libexpat1
+        - libxss1
+        - libudev1
+        - libudev-dev
+        - libflac++-dev
+        - libflac-dev
+        - libswscale-dev
+        - expect
+        - nfs-common
+        - libglvnd-dev
+        - libglvnd-core-dev
+        - libglvnd0
+        - pkg-config
+        - x11-xserver-utils
+        - gcc
+        - make
+        - linux-aws
+        - awscli
+        - ubuntu-desktop
+
+#    - name: Remove gdm3 and what follows
+#      apt:
+#        name: "{{ packages }}"
+#        state: absent
+#      vars:
+#        packages:
+#        - gdm3
+#        - gnome-initial-setup
+#      ignore_errors: yes
+
+
+
+    - name: Install languepacks
+      shell: |
+        apt -y install `check-language-support -l fr`
+        apt -y install `check-language-support -l en`
+        apt -y install `check-language-support -l es`
+        apt -y install `check-language-support -l de`
+        apt -y install `check-language-support -l it`
+
+    - name: Set lightdm as default display manager
+      script: /Users/alibi/aws-ansible/dpkgreconfig
+
+    - name: Upgrade all software
+      apt: upgrade=yes
+
+    - name: Remove useless packages from the cache
+      apt:
+        autoclean: yes
+
+    - name: Remove dependencies that are no longer required
+      apt:
+        autoremove: yes
+
+    - name: Reboot the VMs to enable LINUX-AWS package
+      reboot:
+        msg: System reboot inititated by Ansible
+        reboot_timeout: 120
+
+    - name: Configrue nvidia driver black list on modprob
+      blockinfile:
+        path: /etc/modprobe.d/blacklist.conf
+        block: |
+          blacklist vga16fb
+          blacklist nouveau
+          blacklist rivafb
+          blacklist nvidiafb
+          blacklist rivatv
+
+    - name: Add nouveau blacklist to grub
+      lineinfile: dest=/etc/default/grub regexp='^GRUB_CMDLINE_LINUX=""' line='GRUB_CMDLINE_LINUX="rdblacklist=nouveau"'
+
+    - name: Update Grub settings to apply new blacklist changes
+      shell: sudo update-grub
+
+    - name: Download the Nvidia G4 Driver from AWS S3
+      shell: aws s3 cp --recursive s3://ec2-linux-nvidia-drivers/g4/latest/ /usr/local/
+
+    - name: Set Nvidia driver execute permissions
+      shell: chmod +x /usr/local/NVIDIA-Linux-x86_64*.run
+
+    - name: Stop X server to install nvidia driver
+      shell: |
+        systemctl stop lightdm
+        systemctl stop gdm3
+
+    - name: Install NVIDIA GRID driver
+      shell: sudo /bin/sh /usr/local/NVIDIA-Linux-x86_64*.run -q -a -n -X -s
+      async: 60
+      poll: 5
+
+    - name: Start X server to install nvidia driver
+      shell: |
+        systemctl start lightdm
+
+    - name: Remove NVIDIA driver installer file
+      shell: rm /usr/local/NVIDIA-Linux-x86_64*.run
+      ignore_errors: yes
+
+    - name: Reboot the VMs to enable Nvidia GRID Driver
+      reboot:
+        msg: System reboot inititated by Ansible
+        reboot_timeout: 120
+
+    #- name: Add nvidia grid conf
+    #  lineinfile: dest=/etc/nvidia/gridd.conf regexp='^EnableUI=FALSE' line='EnableUI=TRUE'
+
+    - name: Configure Apport to stop messing around
+      lineinfile:
+        dest: /etc/default/apport
+        regexp: '^enabled=1'
+        line: enabled=0
+
+    - name: Stop gdm initial setup
+      lineinfile:
+        dest: /etc/gdm3/custom.conf
+        regexp: '^# Enabling timed login'
+        line: 'InitialSetupEnable=false'
+
+    - name: Stop gdm initial setup 2.0
+      lineinfile:
+        dest: /etc/xdg/autostart/gnome-initial-setup-first-login.desktop
+        regexp: '^Exec=/usr/lib/gnome-initial-setup/gnome-initial-setup --existing-user'
+        line: '##Exec=/usr/lib/gnome-initial-setup/gnome-initial-setup --existing-user'
+
+    - name: Add the user training
+      user:
+        name: training
+        comment: Training
+        password: "{{ trainingpassword | password_hash('sha512') }}"
+        shell: /bin/bash
+        groups: sudo,audio,video
+        append: yes
+      ignore_errors: true
+
+    - name: Create training user Desktop folder
+      file:
+        path: /home/training/Desktop/
+        state: directory
+        mode: 0755
+        owner: training
+        group: training
+
+    - name: Create PenleopeCloud folder
+      file:
+        path: "{{ efs_mount_dir }}"
+        state: directory
+        mode: 0777
+        owner: training
+        group: training
+
+    - name: Ensure EFS volume is mounted.
+      mount:
+        path: "{{ efs_mount_dir }}"
+        src: "{{ efs_file_system_dns }}:/"
+        fstype: nfs
+        opts: defaults
+        #vers=4
+        state: mounted
+
+    - name: Change training user login method
+      shell: gpasswd -a training nopasswdlogin
+      ignore_errors: true
+
+    - name: Update lightdm config
+      blockinfile:
+        path: /etc/lightdm/lightdm.conf
+        create: yes
+        block: |
+          [SeatDefaults]
+          autologin-user=training
+          autologin-guest=false
+          [Seat:seat*]
+          greeter-setup-script=xhost +LOCAL:
+
+    - name: Update lightdm config
+      blockinfile:
+        path: /var/lib/AccountsService/users/ubuntu
+        create: yes
+        block: |
+          [User]
+          SystemAccount=true
+
+    - name: Set graphical target
+      shell: systemctl get-default && systemctl set-default graphical.target && systemctl isolate graphical.target
+
+    - name: Run an Nvidia xconfig
+      shell: nvidia-xconfig
+
+    - name: Add an apt key for Nice DCV repo
+      shell: wget https://d1uj6qtbmh3dt5.cloudfront.net/NICE-GPG-KEY -P /usr/local/ && gpg --import /usr/local/NICE-GPG-KEY
+
+    - name: Get and extract Nice DCV server archive
+      unarchive:
+        src: "https://d1uj6qtbmh3dt5.cloudfront.net/2020.0/Servers/nice-dcv-2020.0-8428-ubuntu1804.tgz"
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Install the Nice DCV server deb package
+      apt:
+        deb: /usr/local/nice-dcv-2020.0-8428-ubuntu1804/nice-dcv-server_2020.0.8428-1_amd64.ubuntu1804.deb
+
+    - name: Install the Nice DCV xdcv deb package
+      apt:
+        deb: /usr/local/nice-dcv-2020.0-8428-ubuntu1804/nice-xdcv_2020.0.296-1_amd64.ubuntu1804.deb
+
+    - name: Install the Nice DCV GPu sharing dcv-gl deb package
+      apt:
+        deb: /usr/local/nice-dcv-2020.0-8428-ubuntu1804/nice-dcv-gl_2020.0.759-1_amd64.ubuntu1804.deb
+
+    - name: Install the Nice DCV dcv-gl test deb package
+      apt:
+        deb: /usr/local/nice-dcv-2020.0-8428-ubuntu1804/nice-dcv-gltest_2020.0.229-1_amd64.ubuntu1804.deb
+
+    - name: Install the Nice DCV simple external auth deb package
+      apt:
+        deb: /usr/local/nice-dcv-2020.0-8428-ubuntu1804/nice-dcv-simple-external-authenticator_2020.0.87-1_amd64.ubuntu1804.deb
+
+    - name: Delete DCV server deb packages installer
+      file:
+        path: /usr/local/nice-dcv-2020.0-8428-ubuntu1804
+        state: absent
+
+    - name: Install DKMS USB driver
+      apt:
+        name: dkms
+
+    - name: Install the DCV USB drivers
+      shell: dcvusbdriverinstaller --quiet
+
+    - name: Fix console sessions
+      shell: systemctl isolate multi-user.target && dcvgladmin disable && dcvgladmin enable && systemctl isolate graphical.target
+
+    - name: Reconfigure dcvserver config file session creation
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#create-session = true' line='create-session = true'
+
+    - name: Reconfigure dcvserver config file virtual-session
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#enable-gl-in-virtual-sessions = "default-on"' line='enable-gl-in-virtual-sessions = "default-on"'
+
+    - name: Reconfigure dcvserver config file owner
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#owner = ""' line='owner="training"'
+
+    - name: Reconfigure dcvserver config file owner
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#authentication="none"' line='authentication="system"'
+
+    - name: Reconfigure dcvserver config file timeout
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#idle-timeout=120' line='idle-timeout=600'
+
+    - name: Reconfigure dcvserver config file
+      blockinfile:
+        path: /etc/dcv/dcv.conf
+        block: |
+          cuda-devices=['0']
+          [display/linux]
+          gl-displays=[':0.0',':0.1']
+          [clipboard]
+          primary-selection-paste=true
+
+    - name: Service dcvserver enable and start
+      shell: systemctl enable dcvserver && systemctl restart dcvserver
+
+    - name: Reboot the course instances to apply update and enable drivers
+      reboot:
+        msg: System reboot inititated by Ansible to start user session
+        reboot_timeout: 120
+
+  tasks:
+    - name: Create PeneloepCloud Tools folder
+      file:
+        path: /media/penelopecloud/tools/
+        state: directory
+        mode: 0777
+        owner: training
+        group: training
+      poll: 1
+
+  # FastQC ################################################
+    - name: Download FastQC
+      get_url:
+        url: "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.11.9.zip"
+        dest: /media/penelopecloud/tools/fastqc_v0.11.9.zip
+        mode: '0777'
+      poll: 1
+
+    - name: Extract FastQC archive
+      unarchive:
+        src: /media/penelopecloud/tools/fastqc_v0.11.9.zip
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Creat FastQC Symlink
+      file:
+        src: /usr/local/FastQC/fastqc
+        dest: /usr/local/bin/fastqc
+        state: link
+      ignore_errors: yes
+
+    - name: Create FastQC Desktop file
+      file:
+        path: /home/training/Desktop/fastqc.desktop
+        state: touch
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Fill in FastQC Desktop file
+      blockinfile:
+        path: /home/training/Desktop/fastqc.desktop
+        block: |
+          [Desktop Entry]
+          Type=Application
+          Terminal=false
+          Name=FastQC 0.11.9
+          Icon=/usr/local/FastQC/fastqc_icon.ico
+          Exec=/usr/local/FastQC/fastqc
+
+  # R and Rstudio ################################################
+
+    - name: Add R cran apt repository
+      lineinfile:
+        path: /etc/apt/sources.list
+        line: deb https://cloud.r-project.org/bin/linux/ubuntu bionic-cran40/
+        create: yes
+
+    - name: Add the CRAN apt key
+      shell: apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E298A3A825C0D65DFD57CBB651716619E084DAB9
+
+    - name: Install R cran and dependencies
+      apt:
+        name:
+          - r-base
+          - r-base-core
+          - r-recommended
+        update_cache: yes
+
+    - name: Change R libs file permissions
+      file:
+        path: '{{ item }}'
+        mode: '0777'
+        recurse: yes
+      with_items:
+        - /usr/share/R
+        - /usr/lib/R
+        - /usr/local/lib/R
+
+    - name: Install rstudio Deb package
+      apt:
+        deb: https://download1.rstudio.org/desktop/bionic/amd64/rstudio-1.2.5033-amd64.deb
+
+    - name: Copy Rstudio Desktop file
+      copy:
+        src: /usr/share/applications/rstudio.desktop
+        dest: /home/training/Desktop/rstudio.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Install R cran and dependencies
+      apt:
+        name:
+          - libxml2-dev
+          - libxml2
+          - liblzma-dev
+          - curl
+          - libcurl4-openssl-dev
+        update_cache: yes
+
+
+# Pymol edu ################################################
+    - name: Download Pymol
+      get_url:
+        url: "https://pymol.org/installers/PyMOL-2.4.0_178-Linux-x86_64-py37.tar.bz2"
+        dest: /media/penelopecloud/tools/PyMOL-2.4.0_178-Linux-x86_64-py37.tar.bz2
+        mode: '0777'
+      run_once: true
+
+    - name: Extract Pymol archive
+      unarchive:
+        src: /media/penelopecloud/tools/PyMOL-2.4.0_178-Linux-x86_64-py37.tar.bz2
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Copy Pymol licence file
+      copy:
+        src: /Users/alibi/Documents/Courses_Playbooks/pymol-edu-license.lic
+        dest: /usr/local/pymol/share/pymol/license.lic
+        mode: 0777
+
+    - name: Create Pymol Symlink
+      file:
+        src: /usr/local/pymol/pymol
+        dest: /usr/local/bin/pymol
+        state: link
+      ignore_errors: yes
+
+    - name: Create Pymol Desktop file
+      file:
+        path: /home/training/Desktop/pymol.desktop
+        state: touch
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Fill in Pymol Desktop file
+      blockinfile:
+        path: /home/training/Desktop/pymol.desktop
+        block: |
+          [Desktop Entry]
+          Type=Application
+          Terminal=false
+          Name=Pymol 2.4
+          Icon=/usr/local/pymol/share/pymol/data/pymol/icons/icon2_128x128.png
+          Exec=/usr/local/pymol/pymol
+
+# Jupyter ################################################
+    - name: Install Jupyter
+      shell: pip3 install -U jupyter scipy numpy notebook
+#
+# Cytoscape ################################################
+    - name: Download Cytoscape
+      get_url:
+        url: "https://github.com/cytoscape/cytoscape/releases/download/3.8.0/Cytoscape_3_8_0_unix.sh"
+        dest: /media/penelopecloud/tools/Cytoscape_3_8_0_unix.sh
+        mode: '0777'
+      run_once: true
+      ignore_errors: yes
+
+    - name: Install Cytoscape
+      shell: /media/penelopecloud/tools/Cytoscape_3_8_0_unix.sh -q
+      args:
+        chdir: /usr/local/
+      ignore_errors: yes
+
+    - name: Create Cytoscape Symlink1
+      file:
+        src: /usr/local/Cytoscape_v3.8.0/Cytoscape
+        dest: /usr/local/bin/Cytoscape
+        state: link
+      ignore_errors: yes
+
+    - name: Create Cytoscape Symlink2
+      file:
+        src: /usr/local/Cytoscape_v3.8.0/cytoscape.sh
+        dest: /usr/local/bin/cytoscape
+        state: link
+      ignore_errors: yes
+
+    - name: Copy Cytoscape Desktop file
+      copy:
+        src: /usr/local/Cytoscape_v3.8.0/Cytoscape.desktop
+        dest: /home/training/Desktop/Cytoscape.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+      ignore_errors: yes
+#
+# IGV ################################################
+    - name: Download and extract IGV archive
+      unarchive:
+        src: "https://data.broadinstitute.org/igv/projects/downloads/2.8/IGV_Linux_2.8.4.zip"
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Install  with Expect
+      shell: |
+        sed -i 's/\"$prefix\"/\/usr\/local\/IGV_Linux_2.8.4/g' /usr/local/IGV_Linux_2.8.4/igv.sh
+        ln -sf /usr/local/IGV_Linux_2.8.4/igv.sh /usr/local/bin/igv
+      ignore_errors: yes
+
+    - name: Create IGV Desktop file
+      file:
+        path: /home/training/Desktop/igv.desktop
+        state: touch
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Fill in IGV Desktop file
+      blockinfile:
+        path: /home/training/Desktop/igv.desktop
+        block: |
+          [Desktop Entry]
+          Type=Application
+          Terminal=false
+          Name=IGV 2.8.4
+          Icon=/usr/local/IGV_Linux_2.8.4/IGV_64.png
+          Exec=/usr/local/IGV_Linux_2.8.4/igv.sh
+#
+# Samtools ################################################
+    - name: Download and extract Samtools archives
+      unarchive:
+        src:  '{{ item }}'
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+      with_items:
+        - "https://github.com/samtools/htslib/releases/download/1.10.2/htslib-1.10.2.tar.bz2"
+        - "https://github.com/samtools/samtools/releases/download/1.10/samtools-1.10.tar.bz2"
+        - "https://github.com/samtools/bcftools/releases/download/1.10.2/bcftools-1.10.2.tar.bz2"
+
+    - name: Install Samtools dependencies
+      apt:
+        name: "{{ packages }}"
+        update_cache: yes
+      vars:
+        packages:
+        - zlib1g-dev
+        - libbz2-dev
+        - libncurses5-dev
+        - libncursesw5-dev
+        - liblzma-dev
+        - gcc
+        - make
+        - libcurl4-openssl-dev
+        - libssl-dev
+
+    - name: Compile Samtools
+      shell: |
+        ./configure
+        make
+        make install
+      args:
+        chdir: "{{ item }}"
+      with_items:
+        - "/usr/local/htslib-1.10.2"
+        - "/usr/local/samtools-1.10"
+        - "/usr/local/bcftools-1.10.2"
+#
+# Seqmonk ################################################
+    - name: Download Seqmonk
+      get_url:
+        url: "http://www.bioinformatics.babraham.ac.uk/projects/seqmonk/seqmonk_v1.47.0_linux64.tar.gz"
+        dest: /media/penelopecloud/tools/seqmonk_v1.47.0_linux64.tar.gz
+        mode: '0777'
+      run_once: true
+
+    - name: Extract Seqmonk archive
+      unarchive:
+        src: /media/penelopecloud/tools/seqmonk_v1.47.0_linux64.tar.gz
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Create SeqMonk Symlink
+      file:
+        src: /usr/local/SeqMonk/seqmonk
+        dest: /usr/local/bin/seqmonk
+        state: link
+      ignore_errors: yes
+
+    - name: Copy Seqmonk Desktop file
+      copy:
+        src: /usr/local/SeqMonk/seqmonk.desktop
+        dest: /home/training/Desktop/seqmonk.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Set the icon path for Seqmonk Desktop file
+      shell: sed -i 's+/usr/local/SeqMonk/uk/ac/bbsrc/babraham/SeqMonk/Resources/monk.svg+/usr/local/SeqMonk/uk/ac/babraham/SeqMonk/Resources/monk.svg+g' /home/training/Desktop/seqmonk.desktop
+
+    - name: Create SeqMonk R pkg installer file
+      file:
+        path: /usr/local/SeqMonk/pkg_install.R
+        state: touch
+        mode: '0777'
+
+    - name: Fill in SeqMonkR pkg installer file
+      blockinfile:
+        path: /usr/local/SeqMonk/pkg_install.R
+        block: |
+          if (!requireNamespace("BiocManager"))
+            install.packages("BiocManager")
+          #BiocManager::install(update = TRUE, ask = FALSE)
+          BiocManager::install(c("DESeq2", "edgeR", "Rtsne", "limma", "statmod", "fastseg"), ask = FALSE)
+
+    - name: Install R pkgs
+      shell: Rscript /usr/local/SeqMonk/pkg_install.R </dev/null >/dev/null 2>&1 &
+      become: yes
+      become_user: training
+      args:
+        chdir: /home/training/
+      poll: 0
+
+
+# Figtree ################################################
+    - name: Download and extract Figtree archive
+      unarchive:
+        src: "https://github.com/rambaut/figtree/releases/download/v1.4.4/FigTree_v1.4.4.tgz"
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Configure Figtree bash file
+      lineinfile:
+        path: /usr/local/FigTree_v1.4.4/bin/figtree
+        regexp: '-jar lib'
+        line: 'java -Xms64m -Xmx512m -jar /usr/local/FigTree_v1.4.4/lib/figtree.jar "$@"'
+
+    - name: Create Figtree Symlink
+      file:
+        src: /usr/local/FigTree_v1.4.4/bin/figtree
+        dest: /usr/local/bin/figtree
+        state: link
+      ignore_errors: yes
+
+    - name: Create Figtree Desktop file
+      file:
+        path: /home/training/Desktop/figtree.desktop
+        state: touch
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Fill in Figtree Desktop file
+      blockinfile:
+        path: /home/training/Desktop/figtree.desktop
+        block: |
+          [Desktop Entry]
+          Type=Application
+          Terminal=false
+          Name=Figtree 1.4.4
+          Icon=/usr/local/FigTree_v1.4.4/images/figtree.png
+          Exec=/usr/local/FigTree_v1.4.4/bin/figtree
+
+##########################################################################
+##########################################################################
+# Final configuration ################################################
+    - name: Copy Chromium Desktop file
+      copy:
+        src: /usr/share/applications/chromium-browser.desktop
+        dest: /home/training/Desktop/chromium-browser.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Copy Firefox Desktop file
+      copy:
+        src: /usr/share/applications/firefox.desktop
+        dest: /home/training/Desktop/firefox.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Copy Terminal Desktop file
+      copy:
+        src: /usr/share/applications/gnome-terminal.desktop
+        dest: /home/training/Desktop/gnome-terminal.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Copy Word Desktop file
+      copy:
+        src: /usr/share/applications/libreoffice-writer.desktop
+        dest: /home/training/Desktop/libreoffice-writer.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Copy Excel Desktop file
+      copy:
+        src: /usr/share/applications/libreoffice-calc.desktop
+        dest: /home/training/Desktop/libreoffice-calc.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Create user autostater folder
+      file:
+        path: /home/training/.config/autostart
+        state: directory
+
+    - name: Create Desktop truster desktop file
+      file:
+        path: /home/training/.config/autostart/desktop-truster.desktop
+        state: touch
+        owner: training
+        group: training
+        mode: '0777'
+
+
+    - name: Create Desktop truster Bash script file
+      file:
+        path: /home/training/.config/autostart/desktop-truster.sh
+        state: touch
+        owner: training
+        group: training
+        mode: '0777'
+
+
+    - name: Fill-in Desktop truster desktop file
+      blockinfile:
+        path: /home/training/.config/autostart/desktop-truster.desktop
+        block: |
+          [Desktop Entry]
+          Type=Application
+          Comment=Autostarter to trust all desktop files
+          Terminal=false
+          Name=Desktop Truster
+          Exec=/home/training/.config/autostart/desktop-truster.sh
+
+    - name: Fill-in Desktop truster Bash script file
+      blockinfile:
+        path: /home/training/.config/autostart/desktop-truster.sh
+        block: |
+          #!/bin/bash
+          # Wait for nautilus-desktop
+          while ! pgrep -f 'nautilus-desktop' > /dev/null; do
+            sleep 1
+          done
+          # enable user home default desktop icons
+          gsettings set org.gnome.nautilus.desktop home-icon-visible  'true'
+          gsettings set org.gnome.nautilus.desktop volumes-visible 'true'
+          gsettings set org.gnome.nautilus.desktop trash-icon-visible 'true'
+          gsettings set org.gnome.desktop.lockdown disable-lock-screen 'true'
+          gsettings set org.gnome.desktop.screensaver lock-enabled 'false'
+          # Trust all desktop files
+          for i in /home/training/Desktop/*.desktop; do
+            [ -f "${i}" ] || break
+            gio set "${i}" "metadata::trusted" yes
+            # gio set "${i}" "metadata::trusted" true (ubuntu 19.04 onward)
+          done
+          # Restart nautilus, so that the changes take effect (otherwise we would have to press F5)
+          killall nautilus-desktop && nautilus-desktop &
+          # Remove X from this script, so that it won't be executed next time
+          chmod -x ${0}
+
+    - name: Reboot the course instances to apply fixes and tweaks
+      reboot:
+        msg: System reboot inititated by Ansible to start user session
+        reboot_timeout: 120
+
+##########################################################################
+##########################################################################
+- hosts: ThinClientTR2
+#ThinClientTR1 ThinClientTR2
+  name: Manage dcv connection on thin clients
+  gather_facts: false
+  tasks:
+    - name: Ensure nice-dcv-client installed
+      win_shell: choco install nice-dcv-client
+
+    - name: Copy DCV conection files to thinclients
+      win_copy:
+        src: "/Users/alibi/aws-ansible/dcv-files/{{ inventory_hostname }}.dcv"
+        dest: 'C:\Users\Public\Desktop\AWSConnection.dcv'
+      ignore_errors: yes

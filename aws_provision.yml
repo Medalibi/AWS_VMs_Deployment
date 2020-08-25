@@ -1,0 +1,218 @@
+---
+- name: Configure course instances
+  hosts: ins1
+#Training3rdRoom
+  remote_user: ubuntu
+  become: True
+  gather_facts: True
+  pre_tasks:
+    - name: Add extra repos
+      shell: add-apt-repository -y ppa:xorg-edgers/ppa && add-apt-repository -y ppa:atareao/atareao
+
+    - name: Install Ubuntu Repo based tools
+      apt:
+        name: "{{ packages }}"
+        update_cache: yes
+      vars:
+        packages:
+        - autoconf
+        - libtool
+        - aptitude
+        - openjdk-8-jre
+        - openjdk-8-jre-headless
+        - libcanberra-gtk3-module
+        - libcanberra-gtk-module
+        - libxml2-dev
+        - libxml2
+        - liblzma-dev
+        - curl
+        - libcurl4-openssl-dev
+        - build-essential
+        - make
+        - gcc
+        - automake
+        - libssl-dev
+        - zlib1g-dev
+        - libbz2-dev
+        - python3
+        - python
+        - python3-pip
+        - python-pip
+        - gnome-session
+        - ubuntu-desktop
+        - lightdm
+        - mesa-utils
+        - power-commands
+        - chromium-browser
+        - ubuntu-restricted-extras
+        - unrar
+        - rar
+        - icedax
+        - lame
+        - sharutils
+        - unace
+        - zip
+        - unzip
+        - p7zip-full
+        - p7zip-rar
+        - flashplugin-installer
+        - bleachbit
+        - openssh-server
+        - htop
+        - nload
+        - git
+        - python-dbus
+        - python-gobject
+        - libmpeg3-dev
+        - cmake
+        - libjpeg8
+        - libglib2.0-dev
+        - libglib2.0-0
+        - libexpat1
+        - libxss1
+        - libudev1
+        - libudev-dev
+        - libflac++-dev
+        - libflac-dev
+        - libswscale-dev
+        - expect
+
+    - name: Update the software cache
+      apt: update_cache=yes
+
+    - name: Upgrade all software
+      apt: upgrade=yes
+
+    - name: Remove useless packages from the cache
+      apt:
+        autoclean: yes
+
+    - name: Remove dependencies that are no longer required
+      apt:
+        autoremove: yes
+
+    - name: Install Ubuntu Repo based tools
+      apt:
+        name: "{{ packages }}"
+        update_cache: yes
+      vars:
+        packages:
+        - nvidia-driver-418
+        - nvidia-settings
+
+    - name: Add the user training
+      user:
+        name: training
+        comment: Training
+        shell: /bin/bash
+        groups: sudo,audio,video
+        append: yes
+      ignore_errors: true
+
+    - name: Remove gdm3
+      apt:
+        name: gdm3
+        state: absent
+
+    - name: Change training user login method
+      shell: gpasswd -a training nopasswdlogin
+
+    - name: Update lightdm config
+      blockinfile:
+        path: /etc/lightdm/lightdm.conf
+        create: yes
+        block: |
+          [SeatDefaults]
+          autologin-user=training
+          autologin-guest=false
+          [Seat:seat*]
+          greeter-setup-script=xhost +LOCAL:
+
+    - name: Update lightdm config
+      blockinfile:
+        path: /var/lib/AccountsService/users/ubuntu
+        create: yes
+        block: |
+          [User]
+          SystemAccount=true
+
+    - name: Set graphical target
+      shell: systemctl get-default && systemctl set-default graphical.target && systemctl isolate graphical.target
+
+    - name: Run an Nvidia xconfig
+      shell: nvidia-xconfig
+
+    - name: Add an apt key for Nice DCV repo
+      shell: wget https://d1uj6qtbmh3dt5.cloudfront.net/NICE-GPG-KEY -P /usr/local/ && gpg --import /usr/local/NICE-GPG-KEY
+
+    - name: Get and extract Nice DCV server archive
+      unarchive:
+        src: "https://d1uj6qtbmh3dt5.cloudfront.net/2019.1/Servers/nice-dcv-2019.1-7644-ubuntu1804.tgz"
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Install the Nice DCV server deb package
+      apt:
+        deb: /usr/local/nice-dcv-2019.1-7644-ubuntu1804/nice-dcv-server_2019.1.7644-1_amd64.ubuntu1804.deb
+
+    - name: Install the Nice DCV xdcv deb package
+      apt:
+        deb: /usr/local/nice-dcv-2019.1-7644-ubuntu1804/nice-xdcv_2019.1.226-1_amd64.ubuntu1804.deb
+
+    - name: Install the Nice DCV dcv-gl deb package
+      apt:
+        deb: /usr/local/nice-dcv-2019.1-7644-ubuntu1804/nice-dcv-gl_2019.1.544-1_amd64.ubuntu1804.deb
+
+    - name: Install the Nice DCV simple external auth deb package
+      apt:
+        deb: /usr/local/nice-dcv-2019.1-7644-ubuntu1804/nice-dcv-simple-external-authenticator_2019.1.77-1_amd64.ubuntu1804.deb
+
+    - name: Install DKMS USB driver
+      apt:
+        name: dkms
+
+    - name: Install the DCV USB drivers
+      shell: dcvusbdriverinstaller --quiet
+
+    - name: Fix console sessions
+      shell: systemctl isolate multi-user.target && systemctl isolate graphical.target
+
+    - name: Reconfigure dcvserver config file session creation
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#create-session = true' line='create-session = true'
+
+    - name: Reconfigure dcvserver config file virtual-session
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#enable-gl-in-virtual-sessions = "default-on"' line='enable-gl-in-virtual-sessions = "default-on"'
+
+    - name: Reconfigure dcvserver config file owner
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#owner = ""' line='owner="training"'
+
+    - name: Reconfigure dcvserver config file owner
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#authentication="none"' line='authentication="system"'
+
+    - name: Reconfigure dcvserver config file timeout
+      lineinfile: dest=/etc/dcv/dcv.conf regexp='^#idle-timeout=120' line='idle-timeout=600'
+
+    - name: Reconfigure dcvserver config file
+      blockinfile:
+        path: /etc/dcv/dcv.conf
+        block: |
+          cuda-devices=['0']
+          [display/linux]
+          gl-displays=[':0.0',':0.1']
+          [clipboard]
+          primary-selection-paste=true
+
+    - name: Service dcvserver enable and start
+      shell: systemctl enable dcvserver && systemctl restart dcvserver
+
+    - name: Reboot the course instances to apply update and enable drivers
+      reboot:
+        msg: System reboot inititated by Ansible to apply system and drivers updates and changes
+        reboot_timeout: 120
+
+  tasks:
+    - name: Install Pymol
+      apt:
+        name: pymol
+        state: present

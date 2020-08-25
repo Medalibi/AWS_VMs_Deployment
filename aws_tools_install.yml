@@ -1,0 +1,298 @@
+---
+- name: Configure course instances
+  hosts: shakedown
+  name: Configure course instances
+  remote_user: ubuntu
+  become: True
+  gather_facts: False
+  vars:
+    efs_file_system_dns: fs-84620275.efs.eu-west-2.amazonaws.com
+    efs_mount_dir: /media/penelopecloud
+    trainingpassword: training
+    ansible_ssh_private_key_file: /Users/alibi/aws-ansible/Training.pem
+
+  tasks:
+
+  - name: Create PeneloepCloud Tools folder
+    file:
+      path: /media/penelopecloud/tools/
+      state: directory
+      mode: 0777
+      owner: training
+      group: training
+    poll: 1
+
+# FastQC ################################################
+  - name: Download FastQC
+    get_url:
+      url: "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.11.8.zip"
+      dest: /media/penelopecloud/tools/fastqc_v0.11.8.zip
+      mode: '0777'
+    poll: 1
+
+  - name: Extract FastQC archive
+    unarchive:
+      src: /media/penelopecloud/tools/fastqc_v0.11.8.zip
+      dest: /usr/local/
+      remote_src: yes
+      mode: '0777'
+
+  - name: Create FastQC Symlink
+    file:
+      src: /usr/local/FastQC/fastqc
+      dest: /usr/local/bin/fastqc
+      state: link
+    ignore_errors: yes
+
+  - name: Create FastQC Desktop file
+    file:
+      path: /home/training/Desktop/fastqc.desktop
+      state: touch
+      owner: training
+      group: training
+      mode: '0777'
+
+  - name: Fill in FastQC Desktop file
+    blockinfile:
+      path: /home/training/Desktop/fastqc.desktop
+      block: |
+        [Desktop Entry]
+        Type=Application
+        Terminal=false
+        Name=FastQC 0.11.8
+        Icon=/usr/local/FastQC/fastqc_icon.ico
+        Exec=/usr/local/FastQC/fastqc
+
+  - name: Set fastq Desktop icon permissions
+    shell: gio set /home/training/Desktop/fastqc.desktop "metadata::trusted" yes
+    become: yes
+    become_user: training
+    ignore_errors: yes
+
+# R and Rstudio ################################################
+
+  - name: Add R cran apt repository
+    lineinfile:
+      path: /etc/apt/sources.list
+      line: deb https://cloud.r-project.org/bin/linux/ubuntu bionic-cran35/
+      create: yes
+
+  - name: Add the CRAN apt key
+    shell: apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E298A3A825C0D65DFD57CBB651716619E084DAB9
+
+  - name: Install R cran and dependencies
+    apt:
+      name:
+        - r-base
+        - r-base-core
+        - r-recommended
+      update_cache: yes
+
+  - name: Change R libs file permissions
+    file:
+      path: '{{ item }}'
+      mode: '0777'
+      recurse: yes
+    with_items:
+      - /usr/share/R
+      - /usr/lib/R
+      - /usr/local/lib/R
+
+  - name: Install rstudio Deb package
+    apt:
+      deb: https://download1.rstudio.org/desktop/bionic/amd64/rstudio-1.2.5033-amd64.deb
+
+  - name: Copy Rstudio Desktop file
+    copy:
+      src: /usr/share/applications/rstudio.desktop
+      dest: /home/training/Desktop/rstudio.desktop
+      remote_src: yes
+      owner: training
+      group: training
+      mode: '0777'
+
+  - name: Set rstudio Desktop icon permissions
+    shell: gio set /home/training/Desktop/rstudio.desktop "metadata::trusted" yes
+    become: yes
+    become_user: training
+    ignore_errors: yes
+
+  - name: Install R cran and dependencies
+    apt:
+      name:
+        - libxml2-dev
+        - libxml2
+        - liblzma-dev
+        - curl
+        - libcurl4-openssl-dev
+      update_cache: yes
+
+  - name: Create R pkg installer file
+    file:
+      path: /usr/local/pkg_install.R
+      state: touch
+      mode: '0777'
+
+  - name: Fill in R pkg installer file
+    blockinfile:
+      path: /usr/local/pkg_install.R
+      block: |
+        if (!requireNamespace("BiocManager"))
+          install.packages("BiocManager")
+        BiocManager::install(update = TRUE, ask = FALSE)
+        BiocManager::install(c("DESeq2","ggplot2"), ask = FALSE)
+
+  - name: Install R pkgs
+    shell: Rscript /usr/local/pkg_install.R
+    become: yes
+    become_user: training
+    args:
+      chdir: /home/training/
+
+# Pymol edu ################################################
+  - name: Download Pymol
+    get_url:
+      url: "https://pymol.org/installers/PyMOL-2.3.4_121-Linux-x86_64-py37.tar.bz2"
+      dest: /media/penelopecloud/tools/PyMOL-2.3.4_121-Linux-x86_64-py37.tar.bz2
+      mode: '0777'
+    poll: 1
+
+  - name: Extract Pymol archive
+    unarchive:
+      src: /media/penelopecloud/tools/PyMOL-2.3.4_121-Linux-x86_64-py37.tar.bz2
+      dest: /usr/local/
+      remote_src: yes
+      mode: '0777'
+
+  - name: Copy Pymol licence file
+    copy:
+      src: /Users/alibi/Documents/Courses_Playbooks/pymol-edu-license.lic
+      dest: /usr/local/pymol/share/pymol/license.lic
+      mode: 0777
+
+  - name: Create Pymol Symlink
+    file:
+      src: /usr/local/pymol/pymol
+      dest: /usr/local/bin/pymol
+      state: link
+    ignore_errors: yes
+
+  - name: Create Pymol Desktop file
+    file:
+      path: /home/training/Desktop/pymol.desktop
+      state: touch
+      owner: training
+      group: training
+      mode: '0777'
+
+  - name: Fill in Pymol Desktop file
+    blockinfile:
+      path: /home/training/Desktop/pymol.desktop
+      block: |
+        [Desktop Entry]
+        Type=Application
+        Terminal=false
+        Name=Pymol 2.3
+        Icon=/usr/local/pymol/share/pymol/data/pymol/icons/icon2_128x128.png
+        Exec=/usr/local/pymol/pymol
+
+# Chimerax  ################################################
+#  - name: Copy Chimerax deb file
+#    copy:
+#      src: /Users/alibi/Documents/Courses_Playbooks/ucsf-chimerax_0.91_amd64.deb
+#      dest: /media/penelopecloud/tools/ucsf-chimerax_0.91_amd64.deb
+#      mode: 0777
+#    poll: 1
+
+  - name: Install Chimerax Deb package
+    apt:
+      deb: /media/penelopecloud/tools/ucsf-chimerax_0.93_amd64.deb
+
+  - name: Copy Chimerax Desktop file
+    copy:
+      src: /usr/share/applications/UCSF-ChimeraX-0.93.desktop
+      dest: /home/training/Desktop/UCSF-ChimeraX-0.93.desktop
+      remote_src: yes
+      owner: training
+      group: training
+      mode: '0777'
+
+# Jupyter ################################################
+  - name: Install Jupyter
+    shell: pip3 install -U jupyter
+
+# Chimera  ################################################
+#  - name: Copy Chimera bin file
+#    copy:
+#      src: /Users/alibi/Documents/Courses_Playbooks/chimera-1.14-linux_x86_64.bin
+#      dest: /media/penelopecloud/tools/chimera-1.14-linux_x86_64.bin
+#      mode: 0777
+#    poll: 1
+
+  - name: Install Chimera
+    shell: echo /usr/local/chimera | /media/penelopecloud/tools/chimera-1.14-linux_x86_64.bin
+
+  - name: Create Chimera Symlink
+    file:
+      src: /usr/local/chimera/bin/chimera
+      dest: /usr/local/bin/chimera
+      state: link
+    ignore_errors: yes
+
+  - name: Install Chimera Desktop icon
+    shell: /usr/local/chimera/bin/xdg-setup install
+    become: yes
+    become_user: training
+    ignore_errors: yes
+
+# Cytoscape ################################################
+
+  - name: Download Cytoscape
+    get_url:
+      url: "https://github.com/cytoscape/cytoscape/releases/download/3.7.2/Cytoscape_3_7_2_unix.sh"
+      dest: /media/penelopecloud/tools/Cytoscape_3_7_2_unix.sh
+      mode: '0777'
+    poll: 1
+
+  - name: Copy Cystocape to the machines
+    copy:
+      src: /media/penelopecloud/tools/Cytoscape_3_7_2_unix.sh
+      dest: /usr/local/Cytoscape_3_7_2_unix.sh
+      remote_src: yes
+    poll: 5
+
+  - name: Configure Java8 for Cytoscape
+    shell: update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
+
+  - name: Install Cytoscape
+    shell: ./Cytoscape_3_7_2_unix.sh -q
+    args:
+      chdir: /usr/local/
+
+  - name: Create Cytoscape Symlink
+    file:
+      src: /usr/local/Cytoscape_v3.7.2/Cytoscape
+      dest: /usr/local/bin/cytoscape
+      state: link
+    ignore_errors: yes
+
+  - name: Delete Cytoscape installer
+    file:
+      path: /usr/local/Cytoscape_3_7_2_unix.sh
+      state: absent
+    ignore_errors: yes
+
+  - name: Copy Cytoscape Desktop file
+    copy:
+      src: /usr/local/Cytoscape_v3.7.2/Cytoscape.desktop
+      dest: /home/training/Desktop/Cytoscape.desktop
+      remote_src: yes
+      owner: training
+      group: training
+      mode: '0777'
+
+  - name: Set Cytoscape Desktop icon permissions
+    shell: gio set /home/training/Desktop/Cytoscape.desktop "metadata::trusted" yes
+    become: yes
+    become_user: training
+    ignore_errors: yes

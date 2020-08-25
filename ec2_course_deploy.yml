@@ -1,0 +1,269 @@
+---
+- name: Deploy Nice DCV powered Ubuntu 18.04 Instances on AWS
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  vars:
+    course_name: TrainingCourse1
+    instance_type: g4dn.2xlarge
+    security_group: Training-DCV
+    image: ami-0b0072d13badd26fe
+#    template_image_id: lt-074662a2c5a1fe36f
+    keypair: Training
+    region: eu-west-2
+    count: 2
+  vars_files:
+    - aws_keys.yml
+
+  tasks:
+    - name: Create a security group
+      ec2_group:
+        name: "{{ security_group }}"
+        description: The Nice DCV security group
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+            group_desc: SSH for admin
+          - proto: tcp
+            from_port: 8443
+            to_port: 8443
+            cidr_ip: 0.0.0.0/0
+            group_desc: Nice DCV server access
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+            group_desc: AWS SSM access
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+
+    - name: Launch the new EC2 Instance
+      ec2:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        group: "{{ security_group }}"
+        instance_type: "{{ instance_type }}"
+        image: "{{ image }}"
+#        launch_template:
+#              id: "{{ template_image_id }}"
+        wait: true
+        vpc_subnet_id: subnet-818b85f9
+        region: "{{ region }}"
+        keypair: "{{ keypair }}"
+        count: "{{count}}"
+        monitoring: no
+        tenancy: dedicated
+        assign_public_ip: yes
+        instance_profile_name: DCVLicenseAccessTrainingTm
+        volumes:
+          - device_name: /dev/sdb
+##            snapshot: snap-intiubnt
+            volume_type: io1
+            iops: 3000
+            volume_size: 200
+            delete_on_termination: true
+      register: ec2
+
+    - name: Add the newly created host so that we can further contact it
+      add_host:
+        name: "{{ item.public_ip }}"
+        groups: ThirdTrainingRoom1
+      with_items: "{{ ec2.instances }}"
+
+    - name: Add tag to Instance(s)
+      ec2_tag:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        resource: "{{ item.id }}"
+        region: "{{ region }}"
+        state: "present"
+      with_items: "{{ ec2.instances }}"
+      args:
+        tags:
+          Course: "{{ course_name }}"
+          team: TrainingTeam
+
+    - name: Wait for SSH to come up
+      wait_for:
+        host: "{{ item.public_ip }}"
+        port: 22
+        state: started
+      with_items: "{{ ec2.instances }}"
+
+##########################################################################
+##########################################################################
+
+- hosts:  ThirdTrainingRoom1
+  name: Configure course instances
+  remote_user: ubuntu
+  become: True
+  gather_facts: True
+  pre_tasks:
+  - name: Remove old packages
+    apt:
+      name: pymol
+      state: absent
+
+  - name: Update the software cache
+    apt: update_cache=yes
+
+  - name: Upgrade all software
+    apt: upgrade=yes
+
+  - name: Remove useless packages from the cache
+    apt:
+      autoclean: yes
+
+  - name: Remove dependencies that are no longer required
+    apt:
+      autoremove: yes
+
+  tasks:
+
+  # FastQC ################################################
+
+    - name: Download and extract FastQC archive
+      unarchive:
+        src: "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.11.8.zip"
+        dest: /usr/local/
+        remote_src: yes
+        mode: '0777'
+
+    - name: Creat FastQC Symlink
+      file:
+        src: /usr/local/FastQC/fastqc
+        dest: /usr/local/bin/fastqc
+        state: link
+      ignore_errors: yes
+
+    - name: Create FastQC Desktop file
+      file:
+        path: /home/training/Desktop/fastqc.desktop
+        state: touch
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Fill in FastQC Desktop file
+      blockinfile:
+        path: /home/training/Desktop/fastqc.desktop
+        block: |
+          [Desktop Entry]
+          Type=Application
+          Terminal=false
+          Name=FastQC 0.11.8
+          Icon=/usr/local/FastQC/fastqc_icon.ico
+          Exec=/usr/local/FastQC/fastqc
+
+  # R and Rstudio ################################################
+
+    - name: Add R cran apt repository
+      apt_repository:
+        repo: 'deb https://cloud.r-project.org/bin/linux/ubuntu bionic-cran35/'
+        state: present
+        filename: rcran
+        update_cache: yes
+
+    - name: Install R cran and dependencies
+      apt:
+        name:
+          - r-base
+          - r-base-core
+          - r-recommended
+        update_cache: yes
+
+    - name: Change R libs file permissions
+      file:
+        path: '{{ item }}'
+        mode: '0777'
+        recurse: yes
+      with_items:
+        - /usr/share/R
+        - /usr/lib/R
+        - /usr/local/lib/R
+
+    - name: Install rstudio Deb package
+      apt:
+        deb: https://download1.rstudio.org/desktop/bionic/amd64/rstudio-1.2.5019-amd64.deb
+
+    - name: Copy Rstudio Desktop file
+      copy:
+        src: /usr/share/applications/rstudio.desktop
+        dest: /home/training/Desktop/rstudio.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
+
+    - name: Install R cran and dependencies
+      apt:
+        name:
+          - libxml2-dev
+          - libxml2
+          - liblzma-dev
+          - curl
+          - libcurl4-openssl-dev
+        update_cache: yes
+
+    - name: Create R pkg installer file
+      file:
+        path: /usr/local/pkg_install.R
+        state: touch
+        mode: '0777'
+
+    - name: Fill in R pkg installer file
+      blockinfile:
+        path: /usr/local/pkg_install.R
+        block: |
+          if (!requireNamespace("BiocManager"))
+            install.packages("BiocManager")
+          BiocManager::install(update = TRUE, ask = FALSE)
+          BiocManager::install(c("DESeq2"), ask = FALSE)
+
+    - name: Install R pkgs
+      shell: Rscript /usr/local/pkg_install.R
+      become: yes
+      become_user: training
+      args:
+        chdir: /home/training/
+
+  # Cytoscape ################################################
+
+    - name: Download Cytoscape
+      get_url:
+        url: "https://github.com/cytoscape/cytoscape/releases/download/3.7.2/Cytoscape_3_7_2_unix.sh"
+        dest: /usr/local/Cytoscape_3_7_2_unix.sh
+        mode: '0777'
+
+    - name: Install Cytoscape
+      shell: ./Cytoscape_3_7_2_unix.sh -q
+      args:
+        chdir: /usr/local/
+
+    - name: Create Cytoscape Symlink
+      file:
+        src: /opt/Cytoscape_v3.7.2/cytoscape.sh
+        dest: /usr/local/bin/cytoscape
+        state: link
+      ignore_errors: yes
+
+    - name: Delete Cytoscape installer
+      file:
+        path: /usr/local/Cytoscape_3_7_2_unix.sh
+        state: absent
+      ignore_errors: yes
+
+    - name: Copy Cytoscape Desktop file
+      copy:
+        src: /usr/share/applications/Cytoscape-0.desktop
+        dest: /home/training/Desktop/Cytoscape.desktop
+        remote_src: yes
+        owner: training
+        group: training
+        mode: '0777'
