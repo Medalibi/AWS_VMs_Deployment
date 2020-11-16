@@ -1,0 +1,14 @@
+# BEGIN ANSIBLE MANAGED BLOCK
+[version]
+format=1.0
+
+[options]
+fullscreen=true
+
+[connect]
+host=18.130.146.133
+port=8443
+user=training
+password=training
+proxytype=system
+# END ANSIBLE MANAGED BLOCK
