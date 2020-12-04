@@ -9,7 +9,6 @@
     # TrainingBioExcel TrainingSingleCell OSSF-Training TrainingJointWellcome
     instance_type: g4dn.2xlarge
     security_group: Training-DCV
-    image: ami-00f6a0c18edb19300
     trainingpassword: training
     keypair: Training
     region: eu-west-2
@@ -46,13 +45,26 @@
 #          - proto: all
 #            cidr_ip: 0.0.0.0/0
 
+    - name: Aquiring the Ubuntu 18.04 AMIs image
+      amazon.aws.ec2_ami_info:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        owners: 099720109477 # Canonical
+        filters:
+          name: "ubuntu/images/hvm-ssd/ubuntu-bionic-18.04-amd64-server-*"
+      register: ec2_ami
+
+    - set_fact:
+        ec2_ami_latest: "{{ ec2_ami.images | selectattr('name', 'defined') | sort(attribute='creation_date') | last }}"
+
     - name: Launch the new EC2 Instance
       ec2:
         aws_access_key: "{{ aws_access_key }}"
         aws_secret_key: "{{ aws_secret_key }}"
         group: "{{ security_group }}"
         instance_type: "{{ instance_type }}"
-        image: "{{ image }}"
+        image: "{{ ec2_ami_latest.image_id }}"
         wait: true
         vpc_subnet_id: subnet-818b85f9
         region: "{{ region }}"
