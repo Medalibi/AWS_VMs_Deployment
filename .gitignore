@@ -148,3 +148,5 @@ dmypy.json
 Training.pem
 aws_keys.yml
 **ssl**
+aws_keys.yml
+Training.pem
