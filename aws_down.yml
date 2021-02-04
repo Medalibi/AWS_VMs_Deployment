@@ -5,7 +5,7 @@
   gather_facts: False
   vars:
     region: eu-west-2
-    course_name: shakedown
+    course_name: multiomicstest
   vars_files:
     - aws_keys.yml
   tasks:
@@ -18,6 +18,54 @@
         aws_secret_key: "{{ aws_secret_key }}"
       register: ec2
     - debug: var=ec2
+
+    - name: Retrieve the details of Route 53 zone
+      community.aws.route53:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: get
+        zone: "{{ dnszonename }}"
+        record: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.{{ dnszonename }}"
+        type: A
+      with_items: "{{ ec2.instances }}"
+      register: rec
+    - debug: var=rec.results
+
+    - name: Delete new.foo.com A record using the results from the get command
+      community.aws.route53:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: absent
+        zone: "{{ dnszonename }}"
+        record: "{{ item.set.record }}"
+        ttl: "{{ item.set.ttl }}"
+        type: "{{ item.set.type }}"
+        value: "{{ item.set.value }}"
+      with_items: "{{ rec.results }}"
+
+    #- name: Delete the instance A record
+    #  community.aws.route53:
+    #    aws_access_key: "{{ aws_access_key }}"
+    #    aws_secret_key: "{{ aws_secret_key }}"
+    #    state: absent
+    #    zone: "{{ dnszonename }}"
+    #    hosted_zone_id: "{{ dnszoneid }}"
+    #    type: A
+    #    ttl: 7200
+    #    value: "{{ item.public_ip_address }}"
+    #    record: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.{{ dnszonename }}"
+    #  with_items: "{{ ec2.instances }}"
+    #  ignore_errors: yes
+
+    - name: Remove Reservation for the Elastic IPs
+      ec2_eip:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: absent
+        region: "{{ region }}"
+        device_id: "{{ item.instance_id }}"
+        release_on_disassociation: yes
+      with_items: "{{ ec2.instances }}"
 
     - name: Terminate EC2 Instance(s)
       ec2:

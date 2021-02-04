@@ -1,19 +1,23 @@
 ---
-- name: Build master image based on ubuntu 18.04 updated 04/12/2020
+- name: Build master image based on ubuntu 18.04. Last updated on 26/01/2021
   hosts: localhost
   connection: local
   gather_facts: False
   vars:
 ###################################################################
-
-    course_name: trainubnt18img
-    instance_type: g4dn.2xlarge
-
 ###################################################################
-    project_name: OSSF-Training
+##                                                               ##
+    course_name: multiomicsfeb21msr
+    instance_type: g4dn.2xlarge
+    VM_running_schedule: StndrWkdays
+    # ShrtWkdays StndrWkdays Testphs1
+##                                                               ##
+###################################################################
+###################################################################
+    project_name: OS-SF_Training
     # TrainingBioExcel TrainingSingleCell OSSF-Training TrainingJointWellcome
     security_group: Training-DCV
-    subnetid: subnet-818b85f9
+    subnetid: subnet-4538563f
     trainingpassword: "{{ trpass }}"
     keypair: "{{ trkeypair }}"
     region: eu-west-2
@@ -22,33 +26,32 @@
     - aws_keys.yml
 
   tasks:
-#  - name: Create a security group
-#      ec2_group:
-#        name: "{{ security_group }}"
-#        description: The Nice DCV security group
-#        vpc_id: vpc-a458bacd
-#        region: "{{ region }}"
-#        aws_secret_key: "{{ aws_secret_key }}"
-#        rules:
-#          - proto: tcp
-#            from_port: 22
-#            to_port: 22
-#            cidr_ip: 0.0.0.0/0
-#          - proto: tcp
-#            from_port: 8443
-#            to_port: 8443
-#            cidr_ip: 0.0.0.0/0
-#          - proto: tcp
-#            from_port: 2049
-#            to_port: 2049
-#            cidr_ip: sg-0903018d68dbdbbd3
-#          - proto: tcp
-#            from_port: 443
-#            to_port: 443
-#            cidr_ip: 0.0.0.0/0
-#        rules_egress:
-#          - proto: all
-#            cidr_ip: 0.0.0.0/0
+    - name: Create access security group
+      ec2_group:
+        name: "{{ security_group }}"
+        description: The Nice DCV security group
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+            group_desc: SSH for admin
+          - proto: tcp
+            from_port: 8443
+            to_port: 8443
+            cidr_ip: 0.0.0.0/0
+            group_desc: Nice DCV server access
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+            group_desc: AWS SSM access
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
 
     - name: Aquiring the Ubuntu 18.04 AMIs image
       amazon.aws.ec2_ami_info:
@@ -70,41 +73,80 @@
         group: "{{ security_group }}"
         instance_type: "{{ instance_type }}"
         image: "{{ ec2_ami_latest.image_id }}"
-        wait: true
         vpc_subnet_id: "{{ subnetid }}"
         region: "{{ region }}"
         keypair: "{{ keypair }}"
         count: "{{ count }}"
-        monitoring: no
+        monitoring: yes
         tenancy: default
-        ### default dedicated host
+        wait: yes
         assign_public_ip: yes
+        ### default dedicated host
         instance_profile_name: "{{ vmprofile }}"
         volumes:
           - device_name: /dev/sda1
-            volume_type: io1
-            iops: 3000
+            volume_type: gp3
+            #iops: 3000
             volume_size: 300
             delete_on_termination: true
         instance_tags:
           Course: "{{ course_name }}"
-          team: TrainingTeam
+          Team: Training
           Owner: "{{ scriptuser }}"
-          project: "{{ project_name }}"
+          Project: "{{ project_name }}"
+          Schedule: "{{ VM_running_schedule }}"
       register: ec2
+
+    - name: Allocate and Associate a Elastic Public IPs
+      ec2_eip:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: present
+        region: "{{ region }}"
+        in_vpc: yes
+        reuse_existing_ip_allowed: yes
+        device_id: "{{ item.id }}"
+      with_items: "{{ ec2.instances }}"
+      register: eip
+
+    - name: Gather EC2 instances facts after Elastic IP assignment
+      ec2_instance_info:
+        region: "{{ region }}"
+        filters:
+          "tag:Course": "{{ course_name }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+      register: ec2
+    - debug: var=ec2
+
+    - name: Add instance Elastic IP to Route 53
+      community.aws.route53:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: present
+        zone: "{{ dnszonename }}"
+        hosted_zone_id: "{{ dnszoneid }}"
+        record: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.{{ dnszonename }}"
+        type: A
+        ttl: 7200
+        value: "{{ item.public_ip_address }}"
+        #wait: yes
+        validate_certs: yes
+      with_items: "{{ ec2.instances }}"
 
     - name: Add the newly created host so that we can further contact it
       add_host:
         name: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}"
         instance_name: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}"
-        ansible_host: "{{ item.public_ip }}"
+        ansible_host: "{{ item.public_ip_address }}"
         groups: awsfloat
         remote_user: "{{ rmtuser }}"
         ansible_user: "{{ rmtuser }}"
         ansible_ssh_user: "{{ rmtuser }}"
-        become: True
+        become: yes
         ansible_ssh_private_key_file: "{{ ssh_key_file }}"
-        efs_file_system_dns: "{{ efsvolume }}"
+        efs_file_system: "{{ efsvolume }}"
+        efs_mount_point: "{{ efsmountpoint }}"
         efs_mount_dir: "{{ efsmount }}"
         trainingpassword: "{{ trpass }}"
       with_items: "{{ ec2.instances }}"
@@ -113,38 +155,32 @@
       ec2_tag:
         aws_access_key: "{{ aws_access_key }}"
         aws_secret_key: "{{ aws_secret_key }}"
-        resource: "{{ item.id }}"
+        resource: "{{ item.instance_id }}"
         region: "{{ region }}"
         state: "present"
         tags:
           Name: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}"
           Project: "{{ project_name }}"
-          Team: TrainingTeam
-          owner: "{{ scriptuser }}"
-      with_items: "{{ ec2.instances }}"
-
-    - name: Wait for SSH to come up
-      wait_for:
-        host: "{{ item.public_ip }}"
-        port: 22
-        state: started
+          Team: Training
+          Owner: "{{ scriptuser }}"
       with_items: "{{ ec2.instances }}"
 
     - name: Remove old VMs pool file from inventory
       file:
-        path: "/Users/alibi/aws-ansible/hosts.d/{{ course_name }}"
+        path: "~/AWS_VMs_Deployment/hosts.d/{{ course_name }}"
         state: absent
       ignore_errors: yes
 
     - name: Fill in VMs pool inventory file
       blockinfile:
-        path: "/Users/alibi/aws-ansible/hosts.d/{{ course_name }}"
+        path: "~/AWS_VMs_Deployment/hosts.d/{{ course_name }}"
         create: yes
         block: |
           [{{ course_name }}:vars]
           ansible_ssh_private_key_file={{ ssh_key_file }}
           remote_user={{ rmtuser }}
-          efs_file_system_dns={{ efsvolume }}
+          efs_file_system={{ efsvolume }}
+          efs_mount_point={{ efsvolume }}
           efs_mount_dir={{ efsmount }}
           trainingpassword={{ trpass }}
           become=True
@@ -153,19 +189,19 @@
 
     - name: Fill in the local backup pool inventory file
       lineinfile:
-        line: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}   ansible_host={{ item.public_ip }}"
-        path: "/Users/alibi/aws-ansible/hosts.d/{{ course_name }}"
+        line: "{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}   ansible_host={{ item.public_ip_address }}"
+        path: "~/AWS_VMs_Deployment/hosts.d/{{ course_name }}"
         insertafter: EOF
       with_items: "{{ ec2.instances }}"
 
     - name: Create the DCV folder for the course
       file:
-        path: "/Users/alibi/aws-ansible/dcv-files/{{ course_name }}"
+        path: "~/AWS_VMs_Deployment/dcv-files/{{ course_name }}"
         state: directory
 
     - name: Create the DCV files
       blockinfile:
-        path: "/Users/alibi/aws-ansible/dcv-files/{{ course_name }}/{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.dcv"
+        path: "~/AWS_VMs_Deployment/dcv-files/{{ course_name }}/{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.dcv"
         create: yes
         block: |
           [version]
@@ -184,9 +220,9 @@
 
     - name: Create DCV Desktop files for users to users
       lineinfile:
-        line: "host={{ item.public_ip }}"
+        line: "host={{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.{{ dnszonename }}"
         regexp: '^host='
-        path: "/Users/alibi/aws-ansible/dcv-files/{{ course_name }}/{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.dcv"
+        path: "~/AWS_VMs_Deployment/dcv-files/{{ course_name }}/{{ course_name }}-{{ (item.ami_launch_index | int) + 1 }}.dcv"
         state: present
       with_items: "{{ ec2.instances }}"
 
@@ -194,16 +230,29 @@
     #  lineinfile:
     #    line: "host={{ item.1.public_ip }}"
     #    regexp: '^host='
-    #    path: "/Users/alibi/aws-ansible/dcv-files/{{ item.0 }}.dcv"
+    #    path: "~/AWS_VMs_Deployment/dcv-files/{{ item.0 }}.dcv"
     #    state: present
     #  with_together:
     #     - "{{ groups.ThinClientTR1 }}"
     #     - "{{ ec2.instances }}"
     #  ignore_errors: yes
 
+    #- name: Wait for the VMs to be ready for 2 minutes
+    #  wait_for:
+    #    timeout: 120
+    #  delegate_to: localhost
+
+    - name: Wait for SSH service to start properly
+      delegate_to: "{{ item.public_dns_name }}"
+      wait_for_connection:
+        delay: 60
+        timeout: 320
+      with_items: "{{ ec2.instances }}"
+
 ##########################################################################
 ##########################################################################
-- hosts: awsfloat
+- hosts: multiomicsfeb21msr
+  # awsfloat
   ###awstrainingroom
   name: Configure AWS instances OS
   become: True
@@ -211,7 +260,7 @@
   gather_facts: False
   vars:
     trainingpassword: training
-    ansible_ssh_private_key_file: /Users/alibi/aws-ansible/Training.pem
+    ansible_ssh_private_key_file: ~/AWS_VMs_Deployment/Training.pem
   pre_tasks:
     - name: Change instance hostname
       lineinfile:
@@ -287,12 +336,12 @@
         - unzip
         - p7zip-full
         - p7zip-rar
-        - flashplugin-installer
         - bleachbit
         - openssh-server
         - htop
         - nload
         - git
+        - binutils
         - python-dbus
         - python-gobject
         - libmpeg3-dev
@@ -329,16 +378,6 @@
         - python3-dev
         - sudo
 
-#    - name: Remove gdm3 and what follows
-#      apt:
-#        name: "{{ packages }}"
-#        state: absent
-#      vars:
-#        packages:
-#        - gdm3
-#        - gnome-initial-setup
-#      ignore_errors: yes
-
     - name: Install languepacks
       shell: |
         apt -y install `check-language-support -l fr`
@@ -348,7 +387,69 @@
         apt -y install `check-language-support -l it`
 
     - name: Set lightdm as default display manager
-      script: /Users/alibi/aws-ansible/dpkgreconfig
+      script: ~/AWS_VMs_Deployment/dpkgreconfig
+
+    - name: Add the user training
+      user:
+        name: training
+        comment: Training
+        password: "{{ trainingpassword | password_hash('sha512') }}"
+        shell: /bin/bash
+        groups: sudo,audio,video
+        append: yes
+        home: /home/training
+      ignore_errors: true
+
+    - name: Create training user Desktop folder
+      file:
+        path: /home/training/Desktop/
+        state: directory
+        mode: 0755
+        owner: training
+        group: training
+
+    - name: Download efs-utils github folder
+      git:
+        repo: https://github.com/aws/efs-utils
+        dest: /usr/local/efs-utils
+      ignore_errors: yes
+
+    - name: Build and install efs-utils
+      shell: |
+        ./build-deb.sh
+        sudo apt -y install ./build/amazon-efs-utils*deb
+      args:
+       chdir: /usr/local/efs-utils
+
+    - name: Create the EFS mount folder
+      file:
+        path: "{{ efs_mount_dir }}"
+        state: directory
+        mode: 0777
+        owner: training
+        group: training
+
+    - name: Make sure that the EFS mounting configuration is there
+      lineinfile:
+        path: /etc/fstab
+        line: "{{ efs_file_system }}:/ {{ efs_mount_dir }} nfs4   defaults,nfsvers=4.1,_netdev     0 0"
+        create: yes
+
+    - name: Mount the EFS volume
+      shell: mount -a
+
+    #- name: Ensure EFS volume is mounted.
+    #  mount:
+    #    path: "{{ efs_mount_dir }}"
+    #    src: "{{ efs_file_system_dns }}:/"
+    #    fstype: nfs4
+    #    opts: defaults,nfsvers=4.1,_netdev
+        #vers=4
+    #    state: mounted
+
+    - name: Change training user login method
+      shell: gpasswd -a training nopasswdlogin
+      ignore_errors: true
 
     - name: Upgrade all software
       apt: upgrade=yes
@@ -423,7 +524,6 @@
     - name: Stop new LTS release promotion box
       shell: sudo sed -i 's/Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades
 
-
     - name: Stop gdm initial setup
       lineinfile:
         dest: /etc/gdm3/custom.conf
@@ -435,46 +535,6 @@
         dest: /etc/xdg/autostart/gnome-initial-setup-first-login.desktop
         regexp: '^Exec=/usr/lib/gnome-initial-setup/gnome-initial-setup --existing-user'
         line: '##Exec=/usr/lib/gnome-initial-setup/gnome-initial-setup --existing-user'
-
-    - name: Add the user training
-      user:
-        name: training
-        comment: Training
-        password: "{{ trainingpassword | password_hash('sha512') }}"
-        shell: /bin/bash
-        groups: sudo,audio,video
-        append: yes
-        home: /home/training
-      ignore_errors: true
-
-    - name: Create training user Desktop folder
-      file:
-        path: /home/training/Desktop/
-        state: directory
-        mode: 0755
-        owner: training
-        group: training
-
-    - name: Create PenleopeCloud folder
-      file:
-        path: "{{ efs_mount_dir }}"
-        state: directory
-        mode: 0777
-        owner: training
-        group: training
-
-    - name: Ensure EFS volume is mounted.
-      mount:
-        path: "{{ efs_mount_dir }}"
-        src: "{{ efs_file_system_dns }}:/"
-        fstype: nfs
-        opts: defaults
-        #vers=4
-        state: mounted
-
-    - name: Change training user login method
-      shell: gpasswd -a training nopasswdlogin
-      ignore_errors: true
 
     - name: Update lightdm config
       blockinfile:
@@ -506,34 +566,34 @@
 
     - name: Get and extract Nice DCV server archive
       unarchive:
-        src: "https://d1uj6qtbmh3dt5.cloudfront.net/2020.2/Servers/nice-dcv-2020.2-9508-ubuntu1804-x86_64.tgz"
+        src: "https://d1uj6qtbmh3dt5.cloudfront.net/2020.2/Servers/nice-dcv-2020.2-9662-ubuntu1804-x86_64.tgz"
         dest: /usr/local/
         remote_src: yes
         mode: '0777'
 
     - name: Install the Nice DCV server deb package
       apt:
-        deb: /usr/local/nice-dcv-2020.2-9508-ubuntu1804-x86_64/nice-dcv-server_2020.2.9508-1_amd64.ubuntu1804.deb
+        deb: /usr/local/nice-dcv-2020.2-9662-ubuntu1804-x86_64/nice-dcv-server_2020.2.9662-1_amd64.ubuntu1804.deb
 
     - name: Install the Nice DCV xdcv deb package
       apt:
-        deb: /usr/local/nice-dcv-2020.2-9508-ubuntu1804-x86_64/nice-xdcv_2020.2.359-1_amd64.ubuntu1804.deb
+        deb: /usr/local/nice-dcv-2020.2-9662-ubuntu1804-x86_64/nice-xdcv_2020.2.359-1_amd64.ubuntu1804.deb
 
     - name: Install the Nice DCV GPU sharing dcv-gl deb package
       apt:
-        deb: /usr/local/nice-dcv-2020.2-9508-ubuntu1804-x86_64/nice-dcv-gl_2020.2.881-1_amd64.ubuntu1804.deb
+        deb: /usr/local/nice-dcv-2020.2-9662-ubuntu1804-x86_64/nice-dcv-gl_2020.2.881-1_amd64.ubuntu1804.deb
 
     - name: Install the Nice DCV dcv-gl test deb package
       apt:
-        deb: /usr/local/nice-dcv-2020.2-9508-ubuntu1804-x86_64/nice-dcv-gltest_2020.2.259-1_amd64.ubuntu1804.deb
+        deb: /usr/local/nice-dcv-2020.2-9662-ubuntu1804-x86_64/nice-dcv-gltest_2020.2.259-1_amd64.ubuntu1804.deb
 
     - name: Install the Nice DCV simple external auth deb package
       apt:
-        deb: /usr/local/nice-dcv-2020.2-9508-ubuntu1804-x86_64/nice-dcv-simple-external-authenticator_2020.2.125-1_amd64.ubuntu1804.deb
+        deb: /usr/local/nice-dcv-2020.2-9662-ubuntu1804-x86_64/nice-dcv-simple-external-authenticator_2020.2.125-1_amd64.ubuntu1804.deb
 
     - name: Delete DCV server deb packages installer
       file:
-        path: /usr/local/nice-dcv-2020.2-9508-ubuntu1804-x86_64
+        path: /usr/local/nice-dcv-2020.2-9662-ubuntu1804-x86_64
         state: absent
 
     - name: Install DKMS USB driver
@@ -571,6 +631,16 @@
           [clipboard]
           primary-selection-paste=true
 
+    - name: Copy dcv cert and key files
+      copy:
+        src: "{{ item }}"
+        dest: /var/lib/dcv/.config/NICE/dcv/
+        owner: dcv
+        mode: 600
+      with_items:
+        - ~/AWS_VMs_Deployment/dcv.key
+        - ~/AWS_VMs_Deployment/dcv.pem
+
     - name: Service dcvserver enable and start
       shell: systemctl enable dcvserver && systemctl restart dcvserver
 
@@ -581,20 +651,23 @@
 
 ################################################################################################
 ################################################################################################
-
   tasks:
   - name: Create PeneloepCloud Tools folder
     file:
-      path: /media/penelopecloud/tools/
+      path: "{{ efs_mount_dir }}/.tools/"
       state: directory
       mode: 0777
       owner: training
       group: training
     poll: 1
 
-##########################################################################
-##########################################################################
-# Desktop configuration ################################################
+# Installing Course Tools #######################################################################
+
+  - include: MutiomicsFeb21.yaml
+
+################################################################################################
+# Final Setups #################################################################################
+# Desktop configuration ########################################################################
   - name: Copy Chromium Desktop file
     copy:
       src: /usr/share/applications/chromium-browser.desktop
@@ -653,7 +726,6 @@
       group: training
       mode: '0777'
 
-
   - name: Create Desktop truster Bash script file
     file:
       path: /home/training/.config/autostart/desktop-truster.sh
@@ -661,7 +733,6 @@
       owner: training
       group: training
       mode: '0777'
-
 
   - name: Fill-in Desktop truster desktop file
     blockinfile:

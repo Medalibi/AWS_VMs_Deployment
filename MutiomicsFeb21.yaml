@@ -1,0 +1,76 @@
+##########################################################################################
+#
+#   Introduction to multiomics data integration and visualisation
+#   Feb 2021 (Virtual) on AWS build playbook on 27-01-2021
+#
+##########################################################################################
+
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/repo-init.yaml
+
+# Installing Tools #######################################################################
+
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/R-40.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/cytoscape-3.8.2.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/anaconda3.yaml
+
+# Extra Tool specific config ##############################################################
+
+  - name: Install Python3 pkgs using conda
+    shell: |
+      source /home/training/anaconda3/bin/activate
+      conda install python=3.7 cython cython3 mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath
+      conda create -n myenv python=3.7 cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath
+      source activate myenv
+      conda install python=3.7 cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath
+      conda install -c anaconda pip
+      pip install -U cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath urllib3 --use-feature=2020-resolver
+    become: yes
+    become_user: training
+    args:
+      chdir: /home/training/
+    ignore_errors: true
+
+  - name: Create R specific pkg installer file
+    file:
+      path: /usr/local/pkg_install.R
+      state: touch
+      mode: '0777'
+
+  - name: Fill in R specific pkg installer file
+    blockinfile:
+      path: /usr/local/pkg_install.R
+      block: |
+        if (!requireNamespace("BiocManager"))
+          install.packages("BiocManager")
+        BiocManager::install(update = TRUE, ask = FALSE)
+        BiocManager::install(c("ReactomeGSA", "MOFA2", "mixOmics", "org.Hs.eg.db", "gprofiler2", "tidyverse", "DOSE", "caret", "BridgeDbR"), ask = FALSE)
+
+        BiocManager::install(c("GenomicAlignments", "rtracklayer", "reshape2", "RColorBrewer", "gridExtra", "rlist", "Mfuzz", "ReactomePA"), ask = FALSE)
+        BiocManager::install(c("reactome.db", "org.Mm.eg.db", "GO.db", "clusterProfiler", "DESeq2", "ChIPpeakAnno", "biomaRt", "UniProt.ws"), ask = FALSE)
+
+        BiocManager::install(c("MOFAdata", "reticulate", "r.jive", "omicade4", "BloodCancerMultiOmics2017", "survival", "survminer", "zoo"), ask = FALSE)
+        BiocManager::install(c("pheatmap", "fgsea", "MultiAssayExperiment", "ggplot2", "knitr", "data.table", "randomForest", "InterSIM"), ask = FALSE)
+
+  - name: Install R specific pkgs
+    shell: Rscript /usr/local/pkg_install.R
+    become: yes
+    become_user: training
+    args:
+      chdir: /home/training/
+
+# Downloading data sets #########################################################################
+  - name: Download Cytoscape tutorial archive
+    get_url:
+      url: "https://www.ebi.ac.uk/~pporras/teaching_materials/cytoscape_tutorial.zip"
+      dest: /media/penelopeprime/Mutiomics_Feb21/cytoscape_tutorial.zip
+      mode: '0777'
+    run_once: true
+
+  - name: Extract Cytoscape tutorial archive
+    unarchive:
+      src: /media/penelopeprime/Mutiomics_Feb21/cytoscape_tutorial.zip
+      dest: /home/training/
+      remote_src: true
+      owner: training
+      group: training
+      mode: '0777'

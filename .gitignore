@@ -141,6 +141,10 @@ dmypy.json
 **.tgz
 **.d
 **.pem
+**.txt
+**.key
 **dcv-files**
 **fonts**
 Training.pem
+aws_keys.yml
+**ssl**

@@ -1,0 +1,61 @@
+##########################################################################################
+#
+#   Introduction to multiomics data integration and visualisation
+#   Feb 2021 (Virtual) on AWS build playbook on 27-01-2021
+#
+##########################################################################################
+
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/repo-init.yaml
+
+# Installing Tools #######################################################################
+
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/R-40.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/samtools-1.11.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/miniconda3.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/bwa.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/fastqc-0.11.9.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/picard-2.24.0.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/samtools-1.11.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/freebayes-1.3.1.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/tabix.yaml
+  - include: /Users/alibi/Documents/Courses_Playbooks/tools-yml/ensembl-vep.yaml
+
+# Extra Tool specific config ##############################################################
+
+  - name: Install extra tools
+    apt:
+      name: emacs-gtk
+
+  - name: Install Conda environment
+    shell: |
+      conda -c bioconda bwa fastqc picard
+      mkdir -p ~/course/data ~/course/reference ~/course/vcalling ~/course/alignment/postprocessing/ALN_VISUALIZATION 
+
+    become_user: training
+    args:
+      chdir: /home/training/
+
+# Downloading data sets #########################################################################
+  - name: Download course data
+    get_url:
+      url: "{{ item.link }}"
+      dest: "/media/penelopeprime/.tools/{{ item.name }}"
+      mode: '0777'
+    run_once: true
+    with_items:
+      - { link: https://www.ebi.ac.uk/~ernesto/IGSR/masters_IAMZ_jan2020/SAMEA2569438.chr10_1.fastq.gz, name: SAMEA2569438.chr10_1.fastq.gz }
+      - { link: https://www.ebi.ac.uk/~ernesto/IGSR/masters_IAMZ_jan2020/SAMEA2569438.chr10_2.fastq.gz, name: SAMEA2569438.chr10_2.fastq.gz }
+      - { link: https://www.ebi.ac.uk/~ernesto/IGSR/masters_IAMZ_jan2020/Oryza_sativa.IRGSP-1.0.dna.toplevel.chr10.fa, name: Oryza_sativa.IRGSP-1.0.dna.toplevel.chr10.fa }
+
+  - name: Copy course data
+    copy:
+      src: "/media/penelopeprime/.tools/{{ item.name }}"
+      dest: "{{ item.dest }}"
+      remote_src: yes
+      mode: '0777'
+    with_items:
+      - { name: SAMEA2569438.chr10_1.fastq.gz, dest: /home/training/course/data }
+      - { name: SAMEA2569438.chr10_2.fastq.gz, dest: /home/training/course/data }
+      - { name: Oryza_sativa.IRGSP-1.0.dna.toplevel.chr10.fa, dest: /home/training/course/reference/ }
+      - { name: SAMEA2569438.chr10_1.fastq.gz, dest: /home/training/course/alignment/ }
+      - { name: SAMEA2569438.chr10_2.fastq.gz, dest: /home/training/course/alignment/ }
