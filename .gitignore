@@ -150,3 +150,4 @@ aws_keys.yml
 **ssl**
 aws_keys.yml
 Training.pem
+*.pem

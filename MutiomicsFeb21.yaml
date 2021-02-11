@@ -15,15 +15,18 @@
 
 # Extra Tool specific config ##############################################################
 
+  - name: Install Python3 pkgs
+    shell: pip3 install -U cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas python-igraph networkx omnipath urllib3 cairocffi --use-feature=2020-resolver
+
   - name: Install Python3 pkgs using conda
     shell: |
       source /home/training/anaconda3/bin/activate
-      conda install python=3.7 cython cython3 mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath
-      conda create -n myenv python=3.7 cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath
+      conda install python=3.7 cython cython3 mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas python-igraph networkx omnipath cairocffi
+      conda create -n myenv python=3.7 cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas python-igraph networkx omnipath cairocffi
       source activate myenv
-      conda install python=3.7 cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath
+      conda install python=3.7 cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas python-igraph networkx omnipath cairocffi
       conda install -c anaconda pip
-      pip install -U cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas igraph networkx omnipath urllib3 --use-feature=2020-resolver
+      pip install -U cython mofapy2 scipy numpy seaborn matplotlib statsmodels fastcluster pandas python-igraph networkx omnipath urllib3 cairocffi --use-feature=2020-resolver
     become: yes
     become_user: training
     args:
@@ -36,6 +39,16 @@
       state: touch
       mode: '0777'
 
+  - name: Change R libs file permissions
+    file:
+      path: '{{ item }}'
+      mode: '0777'
+      recurse: yes
+    with_items:
+      - /usr/share/R
+      - /usr/lib/R
+      - /usr/local/lib/R
+
   - name: Fill in R specific pkg installer file
     blockinfile:
       path: /usr/local/pkg_install.R
@@ -43,13 +56,13 @@
         if (!requireNamespace("BiocManager"))
           install.packages("BiocManager")
         BiocManager::install(update = TRUE, ask = FALSE)
-        BiocManager::install(c("ReactomeGSA", "MOFA2", "mixOmics", "org.Hs.eg.db", "gprofiler2", "tidyverse", "DOSE", "caret", "BridgeDbR"), ask = FALSE)
+        BiocManager::install(c("ReactomeGSA", "MOFA2", "mixOmics", "org.Hs.eg.db", "gprofiler2", "tidyverse", "DOSE", "caret", "BridgeDbR", "R.utils"), ask = FALSE)
 
-        BiocManager::install(c("GenomicAlignments", "rtracklayer", "reshape2", "RColorBrewer", "gridExtra", "rlist", "Mfuzz", "ReactomePA"), ask = FALSE)
-        BiocManager::install(c("reactome.db", "org.Mm.eg.db", "GO.db", "clusterProfiler", "DESeq2", "ChIPpeakAnno", "biomaRt", "UniProt.ws"), ask = FALSE)
+        BiocManager::install(c("GenomicAlignments", "rtracklayer", "reshape2", "RColorBrewer", "gridExtra", "rlist", "Mfuzz", "ReactomePA", "multiGSEA"), ask = FALSE)
+        BiocManager::install(c("reactome.db", "org.Mm.eg.db", "GO.db", "clusterProfiler", "DESeq2", "ChIPpeakAnno", "biomaRt", "UniProt.ws", "psych"), ask = FALSE)
 
-        BiocManager::install(c("MOFAdata", "reticulate", "r.jive", "omicade4", "BloodCancerMultiOmics2017", "survival", "survminer", "zoo"), ask = FALSE)
-        BiocManager::install(c("pheatmap", "fgsea", "MultiAssayExperiment", "ggplot2", "knitr", "data.table", "randomForest", "InterSIM"), ask = FALSE)
+        BiocManager::install(c("MOFAdata", "reticulate", "r.jive", "omicade4", "BloodCancerMultiOmics2017", "survival", "survminer", "zoo", "preprocessCore"), ask = FALSE)
+        BiocManager::install(c("pheatmap", "fgsea", "MultiAssayExperiment", "ggplot2", "knitr", "data.table", "randomForest", "InterSIM", "ReactomeGSA.data"), ask = FALSE)
 
   - name: Install R specific pkgs
     shell: Rscript /usr/local/pkg_install.R
